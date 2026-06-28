@@ -9,7 +9,9 @@ async function aesEncrypt(plain) {
   const padLen = 16 - (plain.length % 16);
   const padded = new Uint8Array(plain.length + padLen);
   padded.set(plain);
-  padded.fill(padLen, plain.length);
+  for (let i = plain.length; i < padded.length; i++) {
+    padded[i] = padLen;
+  }
 
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-CBC", iv }, cryptoKey, padded
@@ -30,16 +32,34 @@ async function getStreams(tmdbId, mediaType = "movie", season = null, episode = 
   const res = await fetch(url, {
     headers: {
       "Referer": `https://vidrock.ru/embed/${mediaType}/${tmdbId}`,
-      "User-Agent": "Mozilla/5.0"
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Origin": "https://vidrock.ru",
+      "Accept": "application/json, text/plain, */*",
     }
   });
+
+  if (!res.ok) {
+    throw new Error(`Upstream error: ${res.status}`);
+  }
 
   return await res.json();
 }
 
 export default {
   async fetch(request) {
-    const { searchParams } = new URL(request.url);
+    const { searchParams, pathname } = new URL(request.url);
+
+    // CORS preflight
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "*",
+        }
+      });
+    }
+
     const tmdbId = searchParams.get("tmdb_id");
     const mediaType = searchParams.get("media_type") || "movie";
     const season = searchParams.get("season");
@@ -47,20 +67,28 @@ export default {
 
     if (!tmdbId) {
       return new Response(JSON.stringify({ error: "tmdb_id is required" }), {
-        status: 400, headers: { "Content-Type": "application/json" }
+        status: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*"
+        }
       });
     }
 
     try {
       const data = await getStreams(tmdbId, mediaType, season, episode);
 
-      // Filter to only entries with a url
       const streams = {};
       for (const [name, info] of Object.entries(data)) {
         if (info?.url) streams[name] = info.url;
       }
 
-      return new Response(JSON.stringify(streams), {
+      // Debug: also return raw if streams is empty
+      const responseBody = Object.keys(streams).length > 0
+        ? streams
+        : { debug_raw: data };
+
+      return new Response(JSON.stringify(responseBody), {
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*"
@@ -68,7 +96,11 @@ export default {
       });
     } catch (e) {
       return new Response(JSON.stringify({ error: e.message }), {
-        status: 500, headers: { "Content-Type": "application/json" }
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*"
+        }
       });
     }
   }
